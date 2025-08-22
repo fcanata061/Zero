@@ -1,149 +1,141 @@
 #!/bin/bash
-# ========================
-# Zero Package Manager
-# Minimalista, Source-Based
-# ========================
+# zero - gerenciador de pacotes minimalista source-based
 
-# ----- Utils -----
-msg()   { [ "$ZERO_COLOR" = "1" ] && echo -e "\033[1;32m==>\033[0m $*" || echo "==> $*"; }
-warn()  { [ "$ZERO_COLOR" = "1" ] && echo -e "\033[1;33m[!] \033[0m$*" || echo "[!] $*"; }
-err()   { echo "[erro] $*" >&2; exit 1; }
-spinner() {
-  while kill -0 $1 2>/dev/null; do
-    for s in / - \\ \|; do
-      echo -ne "\r[$s] $2 $s"
-      sleep 0.1
-    done
+### Util ###
+msg(){ echo -e "\033[1;32m==>\033[0m $*"; }
+warn(){ echo -e "\033[1;33m!!\033[0m $*"; }
+err(){ echo -e "\033[1;31mEE\033[0m $*" >&2; exit 1; }
+spinner(){ pid=$!; spin='-\|/'; i=0
+  while kill -0 $pid 2>/dev/null; do
+    i=$(( (i+1) %4 ))
+    printf "\r[%c] " "${spin:$i:1}"
+    sleep .1
   done
-  echo -ne "\r[✔] $2\n"
+  printf "\r   \r"
 }
 
-# ----- Helpers -----
-deps_of()    { [ -f "$ZERO_RECIPES/$1/deps" ] && cat "$ZERO_RECIPES/$1/deps"; }
-version_of() { [ -f "$ZERO_RECIPES/$1/version" ] && cat "$ZERO_RECIPES/$1/version"; }
-source_of()  { [ -f "$ZERO_RECIPES/$1/source" ] && cat "$ZERO_RECIPES/$1/source"; }
-
-resolve_deps() {
-  local pkg=$1
-  for dep in $(deps_of $pkg); do
-    resolve_deps $dep
-    echo $dep
-  done | awk '!seen[$0]++'
+### Helpers ###
+deps_of(){ [ -f "$ZERO_RECIPES/$1/deps" ] && cat "$ZERO_RECIPES/$1/deps"; }
+resolve_deps(){ local pkg=$1
+  for d in $(deps_of $pkg); do resolve_deps $d; echo $d; done | awk '!seen[$0]++'
 }
 
-# ----- Core Actions -----
-fetch_sources() {
-  local pkg=$1 url=$(source_of $pkg)
-  [ -z "$url" ] && return
-  mkdir -p "$ZERO_SRC"
-  cd "$ZERO_SRC" || err "Não consegui entrar em $ZERO_SRC"
-  case $url in
-    *.git) git clone --depth 1 "$url" "$pkg" ;;
-    *) curl -LO "$url" ;;
+fetch_sources(){ msg "Baixando fontes $1"
+  while read -r url; do
+    [ -z "$url" ] && continue
+    (cd "$ZERO_SOURCES" && curl -LO $url) &
+    spinner
+  done < "$ZERO_RECIPES/$1/source"
+}
+
+extract_sources(){ msg "Extraindo $1"
+  src=$(head -n1 "$ZERO_RECIPES/$1/source")
+  file=${src##*/}
+  mkdir -p "$ZERO_BUILD/$1"
+  cd "$ZERO_BUILD/$1"
+  case $file in
+    *.tar.gz|*.tgz) tar xzf "$ZERO_SOURCES/$file" ;;
+    *.tar.bz2) tar xjf "$ZERO_SOURCES/$file" ;;
+    *.tar.xz) tar xJf "$ZERO_SOURCES/$file" ;;
+    *.zip) unzip -q "$ZERO_SOURCES/$file" ;;
+    *.git) git clone "$src" ;;
+    *) err "Formato desconhecido: $file" ;;
   esac
 }
 
-extract_sources() {
-  local pkg=$1 url=$(source_of $pkg)
-  mkdir -p "$ZERO_BUILD/$pkg"
-  cd "$ZERO_BUILD/$pkg" || err "Falha em $ZERO_BUILD/$pkg"
-  case $url in
-    *.tar.gz|*.tgz)   tar xf "$ZERO_SRC/$(basename $url)" ;;
-    *.tar.xz)         tar xf "$ZERO_SRC/$(basename $url)" ;;
-    *.tar.bz2)        tar xf "$ZERO_SRC/$(basename $url)" ;;
-    *.zip)            unzip -q "$ZERO_SRC/$(basename $url)" ;;
-    *.git)            cp -r "$ZERO_SRC/$pkg"/* . ;;
-  esac
-}
-
-apply_patches() {
-  local pkg=$1
-  [ -d "$ZERO_RECIPES/$pkg/patch" ] || return
-  for p in "$ZERO_RECIPES/$pkg/patch/"*.patch; do
+apply_patches(){ [ -d "$ZERO_RECIPES/$1/patch" ] || return
+  msg "Aplicando patches $1"
+  cd "$ZERO_BUILD/$1"/* || return
+  for p in "$ZERO_RECIPES/$1"/patch/*.patch; do
     [ -f "$p" ] && patch -p1 < "$p"
   done
 }
 
-build_pkg() {
-  local pkg=$1
-  local build="$ZERO_RECIPES/$pkg/build"
-  [ -x "$build" ] || err "Sem script de build para $pkg"
-  DESTDIR="$ZERO_STAGE/$pkg" bash "$build" >"$ZERO_LOG/$pkg.build.log" 2>&1 &
-  spinner $! "compilando $pkg"
+build_pkg(){ msg "Compilando $1"
+  cd "$ZERO_BUILD/$1"/* || return
+  DESTDIR="$ZERO_STAGE/$1" bash "$ZERO_RECIPES/$1/build" & spinner
 }
 
-install_pkg() {
-  local pkg=$1
-  msg "Instalando $pkg"
-  cp -a "$ZERO_STAGE/$pkg"/* "$ZERO_PREFIX" || err "Falha ao instalar $pkg"
-  version_of $pkg > "$ZERO_DB/$pkg.version"
+install_pkg(){ msg "Instalando $1"
+  cd "$ZERO_STAGE/$1" || return
+  cp -av . "$ZERO_PREFIX" >>"$ZERO_LOG/$1.log" 2>&1
+  echo "$(cat $ZERO_RECIPES/$1/version)" > "$ZERO_DB/$1.version"
 }
 
-remove_pkg() {
-  local pkg=$1
+remove_pkg(){ local pkg=$1
   [ -f "$ZERO_DB/$pkg.version" ] || { warn "$pkg não está instalado"; return; }
   msg "Removendo $pkg"
-  # Simples: remove arquivos listados no DESTDIR
-  # (poderia gerar lista na instalação para remoção mais precisa)
   rm -rf "$ZERO_PREFIX/$(ls "$ZERO_STAGE/$pkg")"
   rm -f "$ZERO_DB/$pkg.version"
-}
-
-upgrade_pkg() {
-  local pkg=$1
-  local newv=$(version_of $pkg)
-  local oldv=$(cat "$ZERO_DB/$pkg.version" 2>/dev/null || echo 0)
-  [ "$newv" \> "$oldv" ] && { $0 build $pkg; $0 install $pkg; }
-}
-
-world() {
-  while read -r pkg; do
-    $0 build $pkg
-  done < "$ZERO_WORLD"
-}
-
-orphans() {
-  for f in "$ZERO_DB"/*.version; do
-    pkg=$(basename "$f" .version)
-    needed=$(grep -R "$pkg" "$ZERO_RECIPES"/*/deps || true)
-    [ -z "$needed" ] && echo "$pkg"
+  # verificar órfãos
+  for dep in $(deps_of $pkg); do
+    local needed=$(grep -R "$dep" "$ZERO_RECIPES"/*/deps | grep -v "/$pkg/deps" || true)
+    if [ -z "$needed" ] && [ -f "$ZERO_DB/$dep.version" ]; then
+      read -p "O pacote '$dep' ficou órfão, deseja remover também? [s/N] " ans
+      if [[ "$ans" =~ ^[sS]$ ]]; then remove_pkg $dep
+      else warn "Mantendo $dep instalado"; fi
+    fi
   done
 }
 
-sync_repo() {
-  cd "$ZERO_GIT" || err "Sem repo git"
-  git add .
-  git commit -m "sync"
-  git push
+upgrade_pkg(){ local pkg=$1 new=$(cat "$ZERO_RECIPES/$pkg/version")
+  [ -f "$ZERO_DB/$pkg.version" ] || { warn "$pkg não instalado"; return; }
+  old=$(cat "$ZERO_DB/$pkg.version")
+  [ "$new" \> "$old" ] || { warn "$pkg já está na versão $old"; return; }
+  msg "Upgrade $pkg $old → $new"
+  $0 build $pkg
 }
 
-# ----- CLI -----
+orphans(){ msg "Listando órfãos"
+  for p in $(ls "$ZERO_DB"); do
+    pkg=${p%.version}
+    needed=$(grep -R "$pkg" "$ZERO_RECIPES"/*/deps || true)
+    [ -z "$needed" ] && echo $pkg
+  done
+}
+
+world(){ msg "Recompilando mundo"
+  for p in $(ls "$ZERO_DB" | sed 's/.version//'); do
+    $0 build $p
+  done
+}
+
+sync_repo(){ msg "Sincronizando repo git"
+  cd "$ZERO_REPO"
+  git add . && git commit -m "sync $(date)" && git push
+}
+
+show_pkg(){ local pkg=$1
+  [ -d "$ZERO_RECIPES/$pkg" ] || { err "Pacote $pkg não existe"; }
+  echo "Pacote:        $pkg"
+  if [ -f "$ZERO_DB/$pkg.version" ]; then
+    echo "Instalado:     $(cat $ZERO_DB/$pkg.version)"
+  else
+    echo "Instalado:     (não instalado)"
+  fi
+  echo "Disponível:    $(cat $ZERO_RECIPES/$pkg/version)"
+  echo "Dependências:  $(deps_of $pkg | xargs echo)"
+  echo "Fonte:         $(head -n1 $ZERO_RECIPES/$pkg/source)"
+  [ -f "$ZERO_LOG/$pkg.log" ] && echo "Log:           $ZERO_LOG/$pkg.log"
+}
+
+### CLI ###
 case $1 in
-  fetch)    shift; fetch_sources $1 ;;
-  extract)  shift; extract_sources $1 ;;
-  patch)    shift; apply_patches $1 ;;
-  build)
-    shift
+  build) shift
     for dep in $(resolve_deps $1); do
-      [ -f "$ZERO_DB/$dep.version" ] || { 
-        fetch_sources $dep
-        extract_sources $dep
-        apply_patches $dep
-        build_pkg $dep
-        install_pkg $dep
-      }
+      [ -f "$ZERO_DB/$dep.version" ] || { $0 build $dep; $0 install $dep; }
     done
     fetch_sources $1
     extract_sources $1
     apply_patches $1
     build_pkg $1
-    install_pkg $1
-    ;;
-  install)  shift; install_pkg $1 ;;
-  remove)   shift; remove_pkg $1 ;;
-  upgrade)  shift; upgrade_pkg $1 ;;
-  world)    world ;;
-  orphans)  orphans ;;
-  sync)     sync_repo ;;
-  *) echo "Uso: $0 {fetch|extract|patch|build|install|remove|upgrade|world|orphans|sync} pkg" ;;
+    $0 install $1 ;;
+  install) shift; install_pkg $1 ;;
+  remove) shift; remove_pkg $1 ;;
+  upgrade) shift; upgrade_pkg $1 ;;
+  orphans) orphans ;;
+  world) world ;;
+  sync) sync_repo ;;
+  show) shift; show_pkg $1 ;;
+  *) echo "uso: $0 {build|install|remove|upgrade|orphans|world|sync|show} pkg";;
 esac
