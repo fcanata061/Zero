@@ -1,0 +1,104 @@
+# Manual de Bootstrap do Sistema com Zero
+
+## 1. Preparação do disco
+
+Criar partição para o LFS:
+  parted /dev/sda mklabel gpt
+  parted /dev/sda mkpart primary ext4 1MiB 100%
+  mkfs.ext4 /dev/sda1
+
+Montar no diretório LFS:
+  export LFS=/mnt/lfs
+  mount /dev/sda1 $LFS
+
+Criar diretórios base:
+  mkdir -pv $LFS/{bin,boot,etc,home,lib,lib64,mnt,opt,proc,root,run,sbin,srv,sys,tmp,usr,var,tools}
+  mkdir -pv $LFS/usr/{bin,lib,sbin}
+  mkdir -pv $LFS/var/{log,lib,cache,spool}
+
+------------------------------------------------------------
+
+## 2. Usuário de build
+
+  groupadd lfs
+  useradd -s /bin/bash -g lfs -m -k /dev/null lfs
+  passwd lfs
+  chown -v lfs $LFS/{usr,lib,var,etc,bin,sbin,tools}
+
+Trocar para o usuário:
+  su - lfs
+
+Arquivo .bash_profile do usuário lfs:
+  exec env -i HOME=$HOME TERM=$TERM PS1='\u:\w\$ ' /bin/bash
+
+Arquivo .bashrc do usuário lfs:
+  set +h
+  umask 022
+  LFS=/mnt/lfs
+  LC_ALL=POSIX
+  LFS_TGT=$(uname -m)-lfs-linux-gnu
+  PATH=/usr/bin
+  if [ ! -L /bin ]; then PATH=/bin:$PATH; fi
+  PATH=$LFS/tools/bin:$PATH
+  export LFS LC_ALL LFS_TGT PATH
+
+------------------------------------------------------------
+
+## 3. Construção do toolchain temporário
+
+Aqui você compila binutils, gcc, glibc etc. em $LFS/tools.
+
+Exemplo Binutils:
+  tar xf binutils-*.tar.xz
+  cd binutils-*/
+  mkdir -v build
+  cd build
+  ../configure --prefix=$LFS/tools --with-sysroot=$LFS --target=$LFS_TGT --disable-nls --disable-werror
+  make
+  make install
+  cd ../..
+
+------------------------------------------------------------
+
+## 4. Entrar no chroot
+
+  chroot "$LFS" /usr/bin/env -i \
+      HOME=/root TERM="$TERM" PS1='(zero-chroot)\u:\w\$ ' \
+      PATH=/bin:/usr/bin:/sbin:/usr/sbin:/tools/bin \
+      /bin/bash --login
+
+------------------------------------------------------------
+
+## 5. Entregar para o Zero
+
+Instalar o zero:
+  cp /sources/zero /usr/bin/
+  chmod +x /usr/bin/zero
+
+Configurar .profile para o zero:
+  export ZERO_DIR=/var/lib/zero
+  export ZERO_LOG=/var/log/zero
+  export ZERO_REPO=/repo
+  export ZERO_PATCH_DIR=/patches
+  export DESTDIR=/tmp/zero-dest
+  export REPO_URL=git@github.com:meuuser/meurepo.git
+
+Layout de receitas:
+  /recipes/gcc/
+   ├── build
+   ├── version
+   ├── deps
+   ├── source
+   └── patch/
+
+Comandos do zero:
+  zero build gcc
+  zero install gcc
+  zero remove gcc
+  zero repo-update
+  zero show gcc
+  zero world
+
+------------------------------------------------------------
+
+Pronto! Agora o zero assume todo o sistema.
