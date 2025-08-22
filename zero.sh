@@ -61,7 +61,6 @@ install_pkg(){ msg "Instalando $1"
   cp -av . "$ZERO_PREFIX" >>"$ZERO_LOG/$1.log" 2>&1
   echo "$(cat $ZERO_RECIPES/$1/version)" > "$ZERO_DB/$1.version"
 }
-
 remove_pkg(){ local pkg=$1
   [ -f "$ZERO_DB/$pkg.version" ] || { warn "$pkg não está instalado"; return; }
   msg "Removendo $pkg"
@@ -102,7 +101,11 @@ world(){ msg "Recompilando mundo"
 
 sync_repo(){ msg "Sincronizando repo git"
   cd "$ZERO_REPO"
-  git add . && git commit -m "sync $(date)" && git push
+  git add recipes
+  git add $(find . -type d -name patch)
+  git add db log
+  git commit -m "sync $(date)" || true
+  git push || true
 }
 
 show_pkg(){ local pkg=$1
