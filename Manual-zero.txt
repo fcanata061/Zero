@@ -1,0 +1,173 @@
+# Manual do zero
+
+## 1. O que é o zero
+O **zero** é um gerenciador de pacotes source-based, escrito em shell script, minimalista e robusto.
+Ele compila pacotes a partir do código-fonte e mantém registro de instalação, logs, dependências e integração com Git.
+
+Principais recursos:
+- Resolução recursiva de dependências
+- Build a partir de receitas (recipes/)
+- Instalação limpa via DESTDIR → /
+- Aplicação automática de patches
+- Registro de pacotes instalados em banco simples (/var/lib/zero/db)
+- Remoção inteligente com opção de limpar dependências órfãs
+- Recompilação total (world) ou de um único pacote
+- strip automático
+- sync com repositório Git (recipes, patches, versões)
+- Colorido e com spinner de progresso
+
+---
+
+## 2. Configuração inicial
+
+Edite seu ~/.profile e adicione:
+
+export ZERO_PREFIX=/
+export ZERO_DB=/var/lib/zero/db
+export ZERO_LOG=/var/log/zero
+export ZERO_REPO=~/meu-repo/repo
+export ZERO_RECIPES=~/meu-repo/recipes
+export ZERO_SOURCES=~/meu-repo/sources
+export ZERO_BUILD=~/meu-repo/build
+export ZERO_STAGE=~/meu-repo/stage
+
+Crie os diretórios:
+
+mkdir -p $ZERO_DB $ZERO_LOG $ZERO_REPO $ZERO_RECIPES $ZERO_SOURCES $ZERO_BUILD $ZERO_STAGE
+
+---
+
+## 3. Estrutura de diretórios
+
+repo/
+├── base/
+├── x11/
+├── extras/
+└── desktop/
+
+recipes/
+└── gcc/
+    ├── build
+    ├── version
+    ├── deps
+    ├── source
+    └── patch/
+
+---
+
+## 4. Estrutura de uma receita
+
+Cada pacote tem um diretório com:
+- build → script com passos de compilação (usando $DESTDIR)
+- version → versão atual do pacote
+- deps → dependências (nomes de outros pacotes)
+- source → URL do código-fonte
+- patch/ → diretório opcional com patches a aplicar
+
+Exemplo build (recipes/gcc/build):
+#!/bin/bash
+set -e
+
+mkdir -p build
+cd build
+../configure \
+  --prefix=/usr \
+  --enable-languages=c,c++ \
+  --disable-multilib \
+  --disable-bootstrap \
+  --enable-checking=release
+make -j$(nproc)
+
+cd ..
+cd build
+make DESTDIR=$DESTDIR install
+
+---
+
+## 5. Comandos principais
+
+zero build <pkg>   → compila (com deps), não instala
+zero install <pkg> → instala no sistema
+zero remove <pkg>  → remove com pergunta para deps órfãs
+zero show <pkg>    → mostra info
+zero world         → recompila todo o sistema
+zero upgrade       → atualiza versões maiores
+zero orphans       → lista pacotes órfãos
+zero sync          → sincroniza com Git
+
+Exemplo show gcc:
+Pacote:        gcc
+Instalado:     14.2.0
+Disponível:    14.2.0
+Dependências:  gmp mpfr mpc isl zlib
+Fonte:         https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.xz
+Log:           /var/log/zero/gcc.log
+
+---
+
+## 6. Fluxo de uso típico
+
+zero build gcc
+zero install gcc
+zero show gcc
+zero sync
+
+---
+
+## 7. Exemplo completo: recipes/gcc
+
+recipes/gcc/
+├── build
+├── version   → 14.2.0
+├── deps      → gmp mpfr mpc isl zlib
+├── source    → https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.xz
+└── patch/
+
+---
+
+## 8. Manutenção e boas práticas
+
+### Criar uma nova receita
+mkdir -p $ZERO_RECIPES/nome-do-pacote/patch
+echo "1.0.0" > $ZERO_RECIPES/nome-do-pacote/version
+echo "dep1 dep2" > $ZERO_RECIPES/nome-do-pacote/deps
+echo "https://url-do-fonte.tar.gz" > $ZERO_RECIPES/nome-do-pacote/source
+nano $ZERO_RECIPES/nome-do-pacote/build
+
+### Atualizar um pacote
+1. Editar o arquivo `version` e colocar a nova versão
+2. Editar o arquivo `source` se a URL mudou
+3. Rodar: zero upgrade <pkg>
+
+### Sincronizar com seu repositório Git
+cd ~/meu-repo
+git add .
+git commit -m "Atualizações no repo"
+git push
+
+Ou simplesmente rodar:
+zero sync
+
+### Remover pacotes e dependências
+- Para remover um pacote:
+  zero remove <pkg>
+- O zero perguntará se você deseja remover também dependências que ficaram órfãs.
+- Para listar manualmente órfãos:
+  zero orphans
+
+### Recompilar o sistema inteiro
+zero world
+
+### Logs e depuração
+- Logs ficam em: /var/log/zero/<pkg>.log
+- Banco de pacotes instalados: /var/lib/zero/db/<pkg>
+
+---
+
+## 9. Considerações finais
+
+- Sempre mantenha seu repositório Git sincronizado (zero sync).
+- Use receitas simples e consistentes.
+- Prefira compilar em $ZERO_BUILD para não poluir o sistema.
+- Faça strip automático para reduzir tamanho final.
+- O zero é minimalista: cada função tem um só propósito.
