@@ -1,158 +1,149 @@
 #!/bin/bash
-# =============================
-# Zero — Gerenciador de Pacotes
-# =============================
+# ========================
+# Zero Package Manager
+# Minimalista, Source-Based
+# ========================
 
-set -euo pipefail
-
-# -------- Utils --------------
-msg() { [ "$ZERO_COLOR" = "1" ] && echo -e "\033[1;32m==>\033[0m $*" || echo "==> $*"; }
-warn() { [ "$ZERO_COLOR" = "1" ] && echo -e "\033[1;33m[!] \033[0m$*" || echo "[!] $*"; }
-err() { echo "[erro] $*" >&2; exit 1; }
+# ----- Utils -----
+msg()   { [ "$ZERO_COLOR" = "1" ] && echo -e "\033[1;32m==>\033[0m $*" || echo "==> $*"; }
+warn()  { [ "$ZERO_COLOR" = "1" ] && echo -e "\033[1;33m[!] \033[0m$*" || echo "[!] $*"; }
+err()   { echo "[erro] $*" >&2; exit 1; }
 spinner() {
   while kill -0 $1 2>/dev/null; do
     for s in / - \\ \|; do
-      echo -ne "\r[$s] $2"
+      echo -ne "\r[$s] $2 $s"
       sleep 0.1
     done
   done
   echo -ne "\r[✔] $2\n"
 }
 
-# -------- Helpers ------------
-recipe_dir()   { echo "$ZERO_RECIPES/$1"; }
-recipe_file()  { echo "$(recipe_dir $1)/$2"; }
-version_of()   { cat "$(recipe_file $1 version)"; }
-deps_of()      { [ -f "$(recipe_file $1 deps)" ] && cat "$(recipe_file $1 deps)" || true; }
-sources_of()   { cat "$(recipe_file $1 source)"; }
+# ----- Helpers -----
+deps_of()    { [ -f "$ZERO_RECIPES/$1/deps" ] && cat "$ZERO_RECIPES/$1/deps"; }
+version_of() { [ -f "$ZERO_RECIPES/$1/version" ] && cat "$ZERO_RECIPES/$1/version"; }
+source_of()  { [ -f "$ZERO_RECIPES/$1/source" ] && cat "$ZERO_RECIPES/$1/source"; }
 
-# -------- Fetch --------------
+resolve_deps() {
+  local pkg=$1
+  for dep in $(deps_of $pkg); do
+    resolve_deps $dep
+    echo $dep
+  done | awk '!seen[$0]++'
+}
+
+# ----- Core Actions -----
 fetch_sources() {
-  local pkg=$1
-  mkdir -p "$ZERO_SRC/$pkg"
-  while read -r src; do
-    case $src in
-      git+*)
-        url=${src#git+}
-        ref=""
-        [[ $url == *"@"* ]] && ref="${url##*@}" url="${url%@*}"
-        dest="$ZERO_SRC/$pkg/$(basename $url .git)"
-        if [ ! -d "$dest/.git" ]; then
-          git clone "$url" "$dest"
-        fi
-        (cd "$dest" && git fetch && [ -n "$ref" ] && git checkout "$ref" || true)
-        ;;
-      *)
-        file="$ZERO_SRC/$pkg/$(basename $src)"
-        [ -f "$file" ] || curl -L "$src" -o "$file"
-        ;;
-    esac
-  done <<< "$(sources_of $pkg)"
+  local pkg=$1 url=$(source_of $pkg)
+  [ -z "$url" ] && return
+  mkdir -p "$ZERO_SRC"
+  cd "$ZERO_SRC" || err "Não consegui entrar em $ZERO_SRC"
+  case $url in
+    *.git) git clone --depth 1 "$url" "$pkg" ;;
+    *) curl -LO "$url" ;;
+  esac
 }
 
-# -------- Extract ------------
 extract_sources() {
-  local pkg=$1
-  rm -rf "$ZERO_BUILD/$pkg" && mkdir -p "$ZERO_BUILD/$pkg"
-  while read -r src; do
-    case $src in
-      git+*)
-        url=${src#git+}
-        url="${url%@*}"
-        cp -r "$ZERO_SRC/$pkg/$(basename $url .git)" "$ZERO_BUILD/$pkg/"
-        ;;
-      *)
-        file="$ZERO_SRC/$pkg/$(basename $src)"
-        tar -xf "$file" -C "$ZERO_BUILD/$pkg"
-        ;;
-    esac
-  done <<< "$(sources_of $pkg)"
+  local pkg=$1 url=$(source_of $pkg)
+  mkdir -p "$ZERO_BUILD/$pkg"
+  cd "$ZERO_BUILD/$pkg" || err "Falha em $ZERO_BUILD/$pkg"
+  case $url in
+    *.tar.gz|*.tgz)   tar xf "$ZERO_SRC/$(basename $url)" ;;
+    *.tar.xz)         tar xf "$ZERO_SRC/$(basename $url)" ;;
+    *.tar.bz2)        tar xf "$ZERO_SRC/$(basename $url)" ;;
+    *.zip)            unzip -q "$ZERO_SRC/$(basename $url)" ;;
+    *.git)            cp -r "$ZERO_SRC/$pkg"/* . ;;
+  esac
 }
 
-# -------- Patch --------------
 apply_patches() {
   local pkg=$1
-  local dir="$ZERO_BUILD/$pkg"
-  [ -d "$(recipe_dir $pkg)/patch" ] || return 0
-  for p in $(recipe_dir $pkg)/patch/*.patch; do
-    [ -f "$p" ] || continue
-    (cd "$dir"/* && patch -Np1 -i "$p")
+  [ -d "$ZERO_RECIPES/$pkg/patch" ] || return
+  for p in "$ZERO_RECIPES/$pkg/patch/"*.patch; do
+    [ -f "$p" ] && patch -p1 < "$p"
   done
 }
 
-# -------- Build --------------
 build_pkg() {
   local pkg=$1
-  mkdir -p "$ZERO_STAGE/$pkg" "$ZERO_LOG"
-  local logf="$ZERO_LOG/$pkg.build.log"
-  ( DESTDIR="$ZERO_STAGE/$pkg" bash "$(recipe_file $pkg build)" ) >"$logf" 2>&1 &
-  spinner $! "build $pkg"
+  local build="$ZERO_RECIPES/$pkg/build"
+  [ -x "$build" ] || err "Sem script de build para $pkg"
+  DESTDIR="$ZERO_STAGE/$pkg" bash "$build" >"$ZERO_LOG/$pkg.build.log" 2>&1 &
+  spinner $! "compilando $pkg"
 }
 
-# -------- Install ------------
 install_pkg() {
   local pkg=$1
-  local v=$(version_of $pkg)
-  [ -d "$ZERO_STAGE/$pkg" ] || err "$pkg não foi compilado"
-  cp -a "$ZERO_STAGE/$pkg"/* "$ZERO_PREFIX"/
-  echo "$v" > "$ZERO_DB/$pkg.version"
-  msg "$pkg $v instalado"
+  msg "Instalando $pkg"
+  cp -a "$ZERO_STAGE/$pkg"/* "$ZERO_PREFIX" || err "Falha ao instalar $pkg"
+  version_of $pkg > "$ZERO_DB/$pkg.version"
 }
 
-# -------- Remove -------------
 remove_pkg() {
   local pkg=$1
-  [ -f "$ZERO_DB/$pkg.version" ] || err "$pkg não está instalado"
-  grep -oP "^/.*" "$ZERO_LOG/$pkg.build.log" | while read -r f; do
-    rm -rf "$ZERO_PREFIX/$f"
-  done || true
-  rm -rf "$ZERO_DB/$pkg.version"
-  msg "$pkg removido"
+  [ -f "$ZERO_DB/$pkg.version" ] || { warn "$pkg não está instalado"; return; }
+  msg "Removendo $pkg"
+  # Simples: remove arquivos listados no DESTDIR
+  # (poderia gerar lista na instalação para remoção mais precisa)
+  rm -rf "$ZERO_PREFIX/$(ls "$ZERO_STAGE/$pkg")"
+  rm -f "$ZERO_DB/$pkg.version"
 }
 
-# -------- Upgrade ------------
 upgrade_pkg() {
   local pkg=$1
-  local nv=$(version_of $pkg)
-  [ -f "$ZERO_DB/$pkg.version" ] || { msg "$pkg não instalado"; return; }
-  local ov=$(cat "$ZERO_DB/$pkg.version")
-  [ "$nv" \> "$ov" ] || { msg "$pkg já na versão $ov"; return; }
-  zero build $pkg && zero install $pkg
+  local newv=$(version_of $pkg)
+  local oldv=$(cat "$ZERO_DB/$pkg.version" 2>/dev/null || echo 0)
+  [ "$newv" \> "$oldv" ] && { $0 build $pkg; $0 install $pkg; }
 }
 
-# -------- World --------------
 world() {
   while read -r pkg; do
-    zero build $pkg && zero install $pkg
+    $0 build $pkg
   done < "$ZERO_WORLD"
 }
 
-# -------- Orphans ------------
 orphans() {
-  for p in $(ls "$ZERO_DB"/*.version 2>/dev/null | xargs -n1 basename | sed 's/.version//'); do
-    needed=0
-    for q in $(ls "$ZERO_DB"/*.version 2>/dev/null | xargs -n1 basename | sed 's/.version//'); do
-      grep -qw "$p" "$(recipe_file $q deps)" 2>/dev/null && needed=1
-    done
-    [ $needed -eq 0 ] && echo "$p"
+  for f in "$ZERO_DB"/*.version; do
+    pkg=$(basename "$f" .version)
+    needed=$(grep -R "$pkg" "$ZERO_RECIPES"/*/deps || true)
+    [ -z "$needed" ] && echo "$pkg"
   done
 }
 
-# -------- Sync ---------------
 sync_repo() {
-  (cd "$ZERO_GIT" && git add . && git commit -m sync && git push)
+  cd "$ZERO_GIT" || err "Sem repo git"
+  git add .
+  git commit -m "sync"
+  git push
 }
 
-# -------- CLI ----------------
-case ${1:-help} in
-  info)     shift; v=$(version_of $1); echo "$1 $v" ;;
-  build)    shift; for p in $(deps_of $1); do $0 build $p; done; fetch_sources $1; extract_sources $1; apply_patches $1; build_pkg $1 ;;
+# ----- CLI -----
+case $1 in
+  fetch)    shift; fetch_sources $1 ;;
+  extract)  shift; extract_sources $1 ;;
+  patch)    shift; apply_patches $1 ;;
+  build)
+    shift
+    for dep in $(resolve_deps $1); do
+      [ -f "$ZERO_DB/$dep.version" ] || { 
+        fetch_sources $dep
+        extract_sources $dep
+        apply_patches $dep
+        build_pkg $dep
+        install_pkg $dep
+      }
+    done
+    fetch_sources $1
+    extract_sources $1
+    apply_patches $1
+    build_pkg $1
+    install_pkg $1
+    ;;
   install)  shift; install_pkg $1 ;;
   remove)   shift; remove_pkg $1 ;;
   upgrade)  shift; upgrade_pkg $1 ;;
-  list)     ls "$ZERO_DB"/*.version 2>/dev/null | sed 's/.*\\///;s/.version//' ;;
+  world)    world ;;
   orphans)  orphans ;;
   sync)     sync_repo ;;
-  world)    world ;;
-  help|*)   echo "zero [info|build|install|remove|upgrade|list|orphans|sync|world] <pkg>" ;;
+  *) echo "Uso: $0 {fetch|extract|patch|build|install|remove|upgrade|world|orphans|sync} pkg" ;;
 esac
