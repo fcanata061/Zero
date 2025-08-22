@@ -1,173 +1,193 @@
-# Manual do zero
+===========================
+ Manual do zero
+===========================
 
-## 1. O que é o zero
-O **zero** é um gerenciador de pacotes source-based, escrito em shell script, minimalista e robusto.
-Ele compila pacotes a partir do código-fonte e mantém registro de instalação, logs, dependências e integração com Git.
+zero é um gerenciador de pacotes minimalista, baseado em código-fonte (source-based),
+escrito em shell script. Ele resolve dependências recursivamente, baixa fontes,
+aplica patches, compila e instala programas no sistema.
 
-Principais recursos:
-- Resolução recursiva de dependências
-- Build a partir de receitas (recipes/)
-- Instalação limpa via DESTDIR → /
-- Aplicação automática de patches
-- Registro de pacotes instalados em banco simples (/var/lib/zero/db)
-- Remoção inteligente com opção de limpar dependências órfãs
-- Recompilação total (world) ou de um único pacote
-- strip automático
-- sync com repositório Git (recipes, patches, versões)
-- Colorido e com spinner de progresso
+---------------------------
+1. Estrutura de diretórios
+---------------------------
 
----
+Por padrão, o zero trabalha dentro de $HOME/.zero, mas isso pode ser alterado no .profile.
 
-## 2. Configuração inicial
+~/.zero/
+  ├── build/       (área de compilação temporária)
+  ├── db/          (banco de dados de pacotes instalados)
+  ├── logs/        (logs de build e instalação)
+  ├── destdir/     (instalação temporária antes de copiar para /)
+  ├── recipes/     (receitas dos pacotes)
+  │    └── gcc/
+  │         ├── build        (script de build)
+  │         ├── source       (URL do source)
+  │         ├── version      (versão do pacote)
+  │         ├── deps         (dependências)
+  │         ├── pre-build    (opcional: hook executado antes do build)
+  │         ├── post-install (opcional: hook executado depois da instalação)
+  │         └── patch/       (diretório de patches)
+  └── repo/        (repositórios git locais ou remotos)
 
-Edite seu ~/.profile e adicione:
+---------------------------
+2. Configuração no .profile
+---------------------------
 
-export ZERO_PREFIX=/
-export ZERO_DB=/var/lib/zero/db
-export ZERO_LOG=/var/log/zero
-export ZERO_REPO=~/meu-repo/repo
-export ZERO_RECIPES=~/meu-repo/recipes
-export ZERO_SOURCES=~/meu-repo/sources
-export ZERO_BUILD=~/meu-repo/build
-export ZERO_STAGE=~/meu-repo/stage
+Adicione ao final do seu ~/.profile:
 
-Crie os diretórios:
+export ZERO_HOME="$HOME/.zero"
+export ZERO_RECIPES="$ZERO_HOME/recipes"
+export ZERO_LOGS="$ZERO_HOME/logs"
+export ZERO_DB="$ZERO_HOME/db"
+export ZERO_BUILD="$ZERO_HOME/build"
+export ZERO_DESTDIR="$ZERO_HOME/destdir"
+export ZERO_REPO="$ZERO_HOME/repo"
 
-mkdir -p $ZERO_DB $ZERO_LOG $ZERO_REPO $ZERO_RECIPES $ZERO_SOURCES $ZERO_BUILD $ZERO_STAGE
+# autocompletar no bash
+if [ -f "$ZERO_HOME/zero-completion.bash" ]; then
+  . "$ZERO_HOME/zero-completion.bash"
+fi
 
----
+Depois rode:
+  source ~/.profile
 
-## 3. Estrutura de diretórios
+---------------------------
+3. Instalação do zero
+---------------------------
 
-repo/
-├── base/
-├── x11/
-├── extras/
-└── desktop/
+1. Crie a pasta do projeto:
+   mkdir -p ~/.zero
+   cd ~/.zero
 
-recipes/
-└── gcc/
-    ├── build
-    ├── version
-    ├── deps
-    ├── source
-    └── patch/
+2. Copie o script "zero" para ~/.zero/zero e torne executável:
+   chmod +x ~/.zero/zero
 
----
+3. Opcional: adicione ao PATH no ~/.profile
+   export PATH="$HOME/.zero:$PATH"
 
-## 4. Estrutura de uma receita
+4. Configure o autocompletar:
+   cp ~/.zero/zero-completion.bash /etc/bash_completion.d/zero
+   # ou para zsh:
+   cp ~/.zero/zero-completion.zsh ~/.zshrc.d/
 
-Cada pacote tem um diretório com:
-- build → script com passos de compilação (usando $DESTDIR)
-- version → versão atual do pacote
-- deps → dependências (nomes de outros pacotes)
-- source → URL do código-fonte
-- patch/ → diretório opcional com patches a aplicar
+---------------------------
+4. Exemplo de receita: GCC
+---------------------------
 
-Exemplo build (recipes/gcc/build):
-#!/bin/bash
-set -e
+~/.zero/recipes/gcc/
+  ├── version
+  ├── deps
+  ├── source
+  ├── build
+  ├── pre-build
+  ├── post-install
+  └── patch/
 
-mkdir -p build
-cd build
-../configure \
-  --prefix=/usr \
-  --enable-languages=c,c++ \
-  --disable-multilib \
-  --disable-bootstrap \
-  --enable-checking=release
-make -j$(nproc)
+Arquivo "version":
+  12.2.0
 
-cd ..
-cd build
-make DESTDIR=$DESTDIR install
+Arquivo "deps":
+  gmp
+  mpfr
+  mpc
 
----
+Arquivo "source":
+  https://ftp.gnu.org/gnu/gcc/gcc-12.2.0/gcc-12.2.0.tar.xz
 
-## 5. Comandos principais
+Arquivo "build":
+  #!/bin/bash
+  set -e
+  mkdir -p build
+  cd build
+  ../configure \
+    --prefix=/usr \
+    --enable-languages=c,c++ \
+    --disable-multilib \
+    --disable-bootstrap \
+    --enable-checking=release
+  make -j$(nproc)
 
-zero build <pkg>   → compila (com deps), não instala
-zero install <pkg> → instala no sistema
-zero remove <pkg>  → remove com pergunta para deps órfãs
-zero show <pkg>    → mostra info
-zero world         → recompila todo o sistema
-zero upgrade       → atualiza versões maiores
-zero orphans       → lista pacotes órfãos
-zero sync          → sincroniza com Git
+  cd ..
+  cd build
+  make DESTDIR=$DESTDIR install
 
-Exemplo show gcc:
-Pacote:        gcc
-Instalado:     14.2.0
-Disponível:    14.2.0
-Dependências:  gmp mpfr mpc isl zlib
-Fonte:         https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.xz
-Log:           /var/log/zero/gcc.log
+Arquivo "pre-build":
+  #!/bin/bash
+  echo "Aplicando patches de GCC..."
+  for p in $ZERO_RECIPES/gcc/patch/*.patch; do
+    [ -f "$p" ] && patch -p1 < "$p"
+  done
 
----
+Arquivo "post-install":
+  #!/bin/bash
+  echo "Rodando pós-instalação do GCC..."
+  strip --strip-unneeded /usr/bin/* || true
 
-## 6. Fluxo de uso típico
+---------------------------
+5. Flags por pacote
+---------------------------
 
-zero build gcc
-zero install gcc
-zero show gcc
-zero sync
+Cada receita pode conter um arquivo "flags" com opções específicas de compilação.
 
----
+Exemplo: ~/.zero/recipes/zlib/flags
+  --shared
+  --prefix=/usr
 
-## 7. Exemplo completo: recipes/gcc
+Durante o build, o zero adiciona estas flags automaticamente ao ./configure.
 
-recipes/gcc/
-├── build
-├── version   → 14.2.0
-├── deps      → gmp mpfr mpc isl zlib
-├── source    → https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.xz
-└── patch/
+---------------------------
+6. Gestão de conflitos
+---------------------------
 
----
+Cada receita pode conter um arquivo "provides" listando binários ou libs instalados.
+O zero verifica antes de instalar se algum outro pacote já fornece o mesmo arquivo.
 
-## 8. Manutenção e boas práticas
+Exemplo ~/.zero/recipes/nano/provides
+  /usr/bin/nano
 
-### Criar uma nova receita
-mkdir -p $ZERO_RECIPES/nome-do-pacote/patch
-echo "1.0.0" > $ZERO_RECIPES/nome-do-pacote/version
-echo "dep1 dep2" > $ZERO_RECIPES/nome-do-pacote/deps
-echo "https://url-do-fonte.tar.gz" > $ZERO_RECIPES/nome-do-pacote/source
-nano $ZERO_RECIPES/nome-do-pacote/build
+Se houver conflito, o zero pergunta:
+  "O arquivo /usr/bin/nano já é fornecido por 'vim'. Deseja substituir? [s/N]"
 
-### Atualizar um pacote
-1. Editar o arquivo `version` e colocar a nova versão
-2. Editar o arquivo `source` se a URL mudou
-3. Rodar: zero upgrade <pkg>
+---------------------------
+7. Repositórios remotos
+---------------------------
 
-### Sincronizar com seu repositório Git
-cd ~/meu-repo
-git add .
-git commit -m "Atualizações no repo"
-git push
+Adicionar um repo:
+  zero repo-add git@github.com:meuuser/meurepo.git base
 
-Ou simplesmente rodar:
-zero sync
+Atualizar:
+  zero repo-update base
 
-### Remover pacotes e dependências
-- Para remover um pacote:
-  zero remove <pkg>
-- O zero perguntará se você deseja remover também dependências que ficaram órfãs.
-- Para listar manualmente órfãos:
-  zero orphans
+O repo é clonado dentro de ~/.zero/repo/<nome>, e receitas ficam em subpastas:
+  ~/.zero/repo/base/recipes/
 
-### Recompilar o sistema inteiro
-zero world
+O zero inclui estas receitas no path de busca.
 
-### Logs e depuração
-- Logs ficam em: /var/log/zero/<pkg>.log
-- Banco de pacotes instalados: /var/lib/zero/db/<pkg>
+---------------------------
+8. Logs
+---------------------------
 
----
+Cada build e instalação gera um log em:
+  ~/.zero/logs/<pacote>.log
 
-## 9. Considerações finais
+Os logs incluem timestamps, mensagens de info, erro e sucesso.
 
-- Sempre mantenha seu repositório Git sincronizado (zero sync).
-- Use receitas simples e consistentes.
-- Prefira compilar em $ZERO_BUILD para não poluir o sistema.
-- Faça strip automático para reduzir tamanho final.
-- O zero é minimalista: cada função tem um só propósito.
+Exemplo:
+  [2025-08-22 19:15:01] [INFO] Baixando source...
+  [2025-08-22 19:15:04] [OK]   Extração concluída
+  [2025-08-22 19:15:20] [INFO] Compilando pacote
+  [2025-08-22 19:45:00] [OK]   gcc instalado com sucesso
+
+---------------------------
+9. Comandos principais
+---------------------------
+
+zero build <pacote>     → compila o pacote (sem instalar)
+zero install <pacote>   → instala o pacote no sistema
+zero remove <pacote>    → remove pacote e pergunta sobre deps
+zero orphans            → remove pacotes órfãos
+zero show <pacote>      → mostra versão, deps, provides
+zero world              → recompila todo o sistema
+zero sync               → sincroniza receitas com git repo
+zero upgrade <pacote>   → atualiza se versão > atual
+zero repo-add <url> <nome> → adiciona repositório remoto
+zero repo-update <nome> → atualiza repositório
